@@ -47,6 +47,7 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
                             {
                                 "package": d["name"],
                                 "version": d["version"],
+                                "version_kind": d.get("version_kind"),
                                 "ecosystem": d["ecosystem"],
                                 "file": path,
                                 **summarize_vuln(v),
@@ -102,15 +103,24 @@ def format_comment(review: dict, cves: list[dict], unpinned: list[dict] | None =
         lines.extend([f"_{summary}_", ""])
 
     lines.append("### Vulnerable dependencies")
+    has_lower_bound = any(c.get("version_kind") == "lower_bound" for c in cves)
     if cves:
         lines.append("")
+        if has_lower_bound:
+            lines.append(
+                "_Note: rows marked `>=` reflect a lower-bound match — the actual installed version (if higher) may not be affected. Pin or use a lockfile for exact results._"
+            )
+            lines.append("")
         lines.append("| Package | Version | Severity | Advisory | Fix versions |")
         lines.append("| --- | --- | --- | --- | --- |")
         for c in cves:
             advisory = ", ".join(c.get("cves") or []) or c.get("id") or ""
             fix = ", ".join(c.get("fix_versions") or []) or "—"
+            ver = c.get("version") or "?"
+            if c.get("version_kind") == "lower_bound":
+                ver = f">= {ver}"
             lines.append(
-                f"| `{c['package']}` | {c.get('version') or '?'} | {c.get('severity')} | {advisory} | {fix} |"
+                f"| `{c['package']}` | {ver} | {c.get('severity')} | {advisory} | {fix} |"
             )
         lines.append("")
         for c in cves:

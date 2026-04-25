@@ -1,7 +1,7 @@
 import json
 import re
 
-REQUIREMENT_RE = re.compile(
+PY_REQ_RE = re.compile(
     r"^\s*([A-Za-z0-9_.\-]+)\s*(\[[^\]]+\])?\s*([<>=!~]=?|===)?\s*([A-Za-z0-9_.\-+*]*)"
 )
 
@@ -12,15 +12,21 @@ def parse_requirements_txt(content: str) -> list[dict]:
         line = raw.split("#", 1)[0].strip()
         if not line or line.startswith("-"):
             continue
-        m = REQUIREMENT_RE.match(line)
+        m = PY_REQ_RE.match(line)
         if not m:
             continue
         name, _extras, op, version = m.group(1), m.group(2), m.group(3), m.group(4)
-        pinned = op in ("==", "===") and version
+        kind = None
+        if version:
+            if op in ("==", "==="):
+                kind = "exact"
+            elif op in (">=", "~="):
+                kind = "lower_bound"
         deps.append(
             {
                 "name": name,
-                "version": version if pinned else None,
+                "version": version if kind else None,
+                "version_kind": kind,
                 "ecosystem": "PyPI",
             }
         )
@@ -35,11 +41,23 @@ def parse_package_json(content: str) -> list[dict]:
     deps: list[dict] = []
     for section in ("dependencies", "devDependencies"):
         for name, raw_version in (data.get(section) or {}).items():
-            cleaned = re.sub(r"^[\^~>=<\s]+", "", str(raw_version)).strip()
+            raw = str(raw_version).strip()
+            kind: str | None = None
+            cleaned = raw
+            if raw.startswith(("^", "~")) or raw.startswith(">="):
+                kind = "lower_bound"
+                cleaned = re.sub(r"^[\^~>=<\s]+", "", raw)
+            elif re.match(r"^\d", raw):
+                kind = "exact"
+                cleaned = raw
+            else:
+                cleaned = re.sub(r"^[\^~>=<\s]+", "", raw)
+                kind = "lower_bound" if cleaned else None
             deps.append(
                 {
                     "name": name,
                     "version": cleaned or None,
+                    "version_kind": kind,
                     "ecosystem": "npm",
                 }
             )
