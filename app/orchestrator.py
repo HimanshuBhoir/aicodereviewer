@@ -22,6 +22,7 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
 
     files = files[: settings.max_files_to_review]
     cve_findings: list[dict] = []
+    unpinned: list[dict] = []
     review_payload: list[dict] = []
 
     for f in files:
@@ -33,6 +34,9 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
             content = await get_file_content(owner, repo, path, head_sha)
             if content:
                 for d in detect_and_parse(path, content):
+                    if not d["version"]:
+                        unpinned.append({"name": d["name"], "ecosystem": d["ecosystem"], "file": path})
+                        continue
                     try:
                         vulns = await lookup(d["name"], d["version"], d["ecosystem"])
                     except Exception as e:
@@ -60,13 +64,15 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
                 }
             )
 
+    cve_findings = _dedupe_cves(cve_findings)
+
     try:
         review = await review_files(review_payload)
     except Exception as e:
         log.exception("AI review failed: %s", e)
         review = {"summary": f"AI review failed: {e}", "issues": []}
 
-    body = format_comment(review, cve_findings)
+    body = format_comment(review, cve_findings, unpinned)
     try:
         await post_pr_comment(owner, repo, pr_number, body)
         log.info("posted review on %s/%s#%s", owner, repo, pr_number)
@@ -74,7 +80,22 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
         log.exception("post comment failed: %s", e)
 
 
-def format_comment(review: dict, cves: list[dict]) -> str:
+def _dedupe_cves(findings: list[dict]) -> list[dict]:
+    """Collapse duplicate advisories (e.g. GHSA + PYSEC for same CVE) per package."""
+    by_key: dict[tuple, dict] = {}
+    for f in findings:
+        cve = (f.get("cves") or [None])[0]
+        key = (f["package"], f["ecosystem"], cve or f.get("id"))
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = f
+            continue
+        if existing.get("severity") in (None, "", "UNKNOWN") and f.get("severity") not in (None, "", "UNKNOWN"):
+            by_key[key] = f
+    return list(by_key.values())
+
+
+def format_comment(review: dict, cves: list[dict], unpinned: list[dict] | None = None) -> str:
     lines: list[str] = ["## CVE-Aware Code Review", ""]
     summary = (review.get("summary") or "").strip()
     if summary:
@@ -99,6 +120,15 @@ def format_comment(review: dict, cves: list[dict]) -> str:
         lines.append("")
     else:
         lines.append("No vulnerable dependencies detected (or no manifest changes in this PR).")
+        lines.append("")
+
+    if unpinned:
+        lines.append("### Unpinned dependencies (skipped)")
+        lines.append("")
+        lines.append("These packages had no exact version (`==`) so OSV lookup was skipped to avoid false positives. Pin them or add a lockfile for accurate CVE checks.")
+        lines.append("")
+        for u in unpinned:
+            lines.append(f"- `{u['name']}` ({u['ecosystem']}) in `{u['file']}`")
         lines.append("")
 
     issues = review.get("issues") or []
