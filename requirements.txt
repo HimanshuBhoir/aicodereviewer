@@ -3,4 +3,3 @@ uvicorn[standard]>=0.32.0
 httpx>=0.27.0
 pydantic>=2.11.0
 pydantic-settings>=2.6.0
-pyjwt==1.7.1  # intentional vulnerable pin to exercise CVE detection (CVE-2022-29217); not imported anywhere
