@@ -24,6 +24,8 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
     cve_findings: list[dict] = []
     unpinned: list[dict] = []
     review_payload: list[dict] = []
+    checked_count = 0
+    manifest_files: list[str] = []
 
     for f in files:
         path = f["filename"]
@@ -33,6 +35,7 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
         if status != "removed" and path.lower().endswith(MANIFEST_SUFFIXES):
             content = await get_file_content(owner, repo, path, head_sha)
             if content:
+                manifest_files.append(path)
                 for d in detect_and_parse(path, content):
                     if not d["version"]:
                         unpinned.append({"name": d["name"], "ecosystem": d["ecosystem"], "file": path})
@@ -42,6 +45,7 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
                     except Exception as e:
                         log.warning("OSV lookup failed for %s@%s: %s", d["name"], d["version"], e)
                         continue
+                    checked_count += 1
                     for v in vulns:
                         cve_findings.append(
                             {
@@ -73,7 +77,7 @@ async def review_pull_request(owner: str, repo: str, pr_number: int, head_sha: s
         log.exception("AI review failed: %s", e)
         review = {"summary": f"AI review failed: {e}", "issues": []}
 
-    body = format_comment(review, cve_findings, unpinned)
+    body = format_comment(review, cve_findings, unpinned, checked_count, manifest_files)
     try:
         await post_pr_comment(owner, repo, pr_number, body)
         log.info("posted review on %s/%s#%s", owner, repo, pr_number)
@@ -96,7 +100,13 @@ def _dedupe_cves(findings: list[dict]) -> list[dict]:
     return list(by_key.values())
 
 
-def format_comment(review: dict, cves: list[dict], unpinned: list[dict] | None = None) -> str:
+def format_comment(
+    review: dict,
+    cves: list[dict],
+    unpinned: list[dict] | None = None,
+    checked_count: int = 0,
+    manifest_files: list[str] | None = None,
+) -> str:
     lines: list[str] = ["## CVE-Aware Code Review", ""]
     summary = (review.get("summary") or "").strip()
     if summary:
@@ -129,7 +139,13 @@ def format_comment(review: dict, cves: list[dict], unpinned: list[dict] | None =
                 lines.append(f"- **{c['package']}** ({advisory}): {c['summary']}")
         lines.append("")
     else:
-        lines.append("No vulnerable dependencies detected (or no manifest changes in this PR).")
+        if checked_count or unpinned or manifest_files:
+            files_str = ", ".join(f"`{m}`" for m in (manifest_files or [])) or "manifest"
+            lines.append(
+                f"Checked {checked_count} package(s) from {files_str} — no known CVEs at the parsed versions."
+            )
+        else:
+            lines.append("No dependency manifests changed in this PR.")
         lines.append("")
 
     if unpinned:
